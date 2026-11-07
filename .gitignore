@@ -1,0 +1,9 @@
+# Compiled Java classes
+out/
+*.class
+
+# OS / editor junk
+.DS_Store
+*.swp
+.idea/
+*.iml
