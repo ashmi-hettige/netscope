@@ -1,73 +1,34 @@
-# NetScope – Application Communication Protocol
+# NetScope Application-Layer Protocol
 
-## 1. Introduction
+A small custom protocol over TCP and UDP. All three programs code against these
+exact message formats, so they are frozen once agreed.
 
-NetScope uses TCP and UDP communication between the client and server.
+## 1. Scan request — TCP, client to server
+One line, space-separated:
+    SCAN <targetIP> <startPort> <endPort> <udpPort>
+- targetIP  : host to scan (one you own / may test)
+- startPort : first port (1..65535)
+- endPort   : last port (>= startPort)
+- udpPort   : the client's UDP port to send progress to
+Example: SCAN 127.0.0.1 1 1024 53517
 
-- TCP is used to send scan requests and receive final scan results.
-- UDP is used to send real-time scan progress updates.
+## 2. Progress update — UDP, server to client
+Sent repeatedly during the scan (loss is acceptable):
+    PROGRESS <percent> <openPortsFoundSoFar>
+Example: PROGRESS 46 3
 
-## 2. Scan Request (Client to Server – TCP)
+## 3. Final report — TCP, server to client
+Reliable, ordered, framed by markers:
+    REPORT_START
+    Target      : 127.0.0.1
+    Range       : 1-1024 (1024 ports)
+    Open ports  : 3
+    Elapsed     : 812 ms
+    ----------------------------------------------
+    PORT	SERVICE		BANNER
+    22	SSH		SSH-2.0-OpenSSH_8.9
+    80	HTTP		-
+    REPORT_END
 
-The client sends a scan request using the following format:
-
-`SCAN <ip> <startPort> <endPort> <udpPort>`
-
-Example:
-
-`SCAN 127.0.0.1 1 1000 5000`
-
-Fields:
-- `ip`: Target IP address or hostname.
-- `startPort`: Starting port number.
-- `endPort`: Ending port number.
-- `udpPort`: Client UDP port for progress updates.
-
-## 3. Progress Update (Server to Client – UDP)
-
-The server sends progress updates using UDP.
-
-Format:
-
-`PROGRESS <percent> <openCount>`
-
-Example:
-
-`PROGRESS 50 5`
-
-Fields:
-- `percent`: Percentage of the scanning process completed.
-- `openCount`: Number of open ports discovered so far.
-
-## 4. Final Scan Report (Server to Client – TCP)
-
-The server sends the final scan report through the TCP connection.
-
-The report starts with:
-
-`REPORT_START`
-
-It contains the scan results, followed by:
-
-`REPORT_END`
-
-Each result represents an open port and its identified service.
-
-## 5. Error Message (Server to Client – TCP)
-
-If the server detects an invalid request or an error, it sends:
-
-`ERROR <errorMessage>`
-
-Example:
-
-`ERROR Invalid port range`
-
-## 6. Communication Summary
-
-| Communication | Protocol | Purpose |
-|---|---|---|
-| Client to Server | TCP | Send scan request |
-| Server to Client | UDP | Send live progress updates |
-| Server to Client | TCP | Send final scan report |
-| Server to Client | TCP | Send error messages |
+## 4. Error — TCP, server to client
+    ERROR <human-readable message>
