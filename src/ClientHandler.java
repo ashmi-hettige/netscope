@@ -48,7 +48,6 @@ public class ClientHandler implements Runnable {
         AtomicInteger done = new AtomicInteger(0);
         List<PortResult> openPorts = Collections.synchronizedList(new ArrayList<PortResult>());
 
-        // a pool of threads so many ports are checked at the same time
         ExecutorService pool = Executors.newFixedThreadPool(POOL_SIZE);
         long startTime = System.currentTimeMillis();
 
@@ -62,19 +61,22 @@ public class ClientHandler implements Runnable {
 
         pool.shutdown();
         try {
-            pool.awaitTermination(1, TimeUnit.MINUTES);   // wait for every task to finish
+            pool.awaitTermination(1, TimeUnit.MINUTES);
         } catch (InterruptedException e) {
             System.out.println("Scan interrupted");
         }
 
         long time = System.currentTimeMillis() - startTime;
 
-        // send the report back to the client
+        // put the open ports in order before sending them
+        openPorts.sort(Comparator.comparingInt(r -> r.port));
+
         out.println("REPORT_START");
         out.println("Target: " + target);
-        out.println("Range: " + start + "-" + end);
+        out.println("Range: " + start + "-" + end + " (" + (end - start + 1) + " ports)");
         out.println("Open ports: " + openPorts.size());
         out.println("Time: " + time + " ms");
+        out.println("PORT\tSERVICE\t\tBANNER");
         for (PortResult r : openPorts) {
             out.println(r.port + "\t" + r.service + "\t" + r.banner);
         }
@@ -83,8 +85,7 @@ public class ClientHandler implements Runnable {
         System.out.println("Scanned " + done.get() + " ports, " + openPorts.size() + " open");
     }
 
-    // Stub for now - Member 2 fills in the real port check.
-    // clientAddr and udpPort get used when M2 adds the UDP progress part.
+    // Stub - Member 2 fills in the real port check.
     private void scanOnePort(String host, int port, List<PortResult> openPorts) {
         // TODO (M2): try to connect with a timeout; if it connects, the port is open
     }
