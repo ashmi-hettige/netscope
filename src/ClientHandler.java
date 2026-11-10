@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class ClientHandler implements Runnable {
     private Socket socket;
     private static final int POOL_SIZE = 200;
-    private static final int TIMEOUT = 300;   // ms to wait for a port (used by M2's probe)
+    private static final int TIMEOUT = 300;   // ms to wait for a port to answer
 
     public ClientHandler(Socket socket) {
         this.socket = socket;
@@ -21,7 +21,6 @@ public class ClientHandler implements Runnable {
             String request = in.readLine();
             System.out.println("Got request: " + request);
 
-            // expected format: SCAN <ip> <start> <end> <udpPort>
             String[] parts = request.split(" ");
             if (parts.length != 5 || !parts[0].equals("SCAN")) {
                 out.println("ERROR Invalid request");
@@ -45,17 +44,32 @@ public class ClientHandler implements Runnable {
     private void scanPorts(String target, int start, int end,
                            InetAddress clientAddr, int udpPort, PrintWriter out) {
 
+        int totalPorts = end - start + 1;
         AtomicInteger done = new AtomicInteger(0);
         List<PortResult> openPorts = Collections.synchronizedList(new ArrayList<PortResult>());
 
         ExecutorService pool = Executors.newFixedThreadPool(POOL_SIZE);
         long startTime = System.currentTimeMillis();
 
+        // (M2) open a UDP socket for sending progress updates
+        DatagramSocket udp = null;
+        try {
+            udp = new DatagramSocket();
+        } catch (SocketException e) {
+            System.out.println("Could not open UDP socket: " + e.getMessage());
+        }
+        final DatagramSocket udpSocket = udp;
+
         for (int port = start; port <= end; port++) {
             final int p = port;
             pool.submit(() -> {
                 scanOnePort(target, p, openPorts);
-                done.incrementAndGet();
+                int finished = done.incrementAndGet();
+                // (M2) send progress every 20 ports, only if the client gave a UDP port
+                if (udpSocket != null && udpPort > 0 && (finished % 20 == 0 || finished == totalPorts)) {
+                    int percent = finished * 100 / totalPorts;
+                    sendProgress(udpSocket, clientAddr, udpPort, percent, openPorts.size());
+                }
             });
         }
 
@@ -65,15 +79,15 @@ public class ClientHandler implements Runnable {
         } catch (InterruptedException e) {
             System.out.println("Scan interrupted");
         }
+        if (udpSocket != null) udpSocket.close();
 
         long time = System.currentTimeMillis() - startTime;
 
-        // put the open ports in order before sending them
         openPorts.sort(Comparator.comparingInt(r -> r.port));
 
         out.println("REPORT_START");
         out.println("Target: " + target);
-        out.println("Range: " + start + "-" + end + " (" + (end - start + 1) + " ports)");
+        out.println("Range: " + start + "-" + end + " (" + totalPorts + " ports)");
         out.println("Open ports: " + openPorts.size());
         out.println("Time: " + time + " ms");
         out.println("PORT\tSERVICE\t\tBANNER");
@@ -85,8 +99,45 @@ public class ClientHandler implements Runnable {
         System.out.println("Scanned " + done.get() + " ports, " + openPorts.size() + " open");
     }
 
-    // Stub - Member 2 fills in the real port check.
+    // (M2) the real check: try to connect; if it works, the port is open
     private void scanOnePort(String host, int port, List<PortResult> openPorts) {
-        // TODO (M2): try to connect with a timeout; if it connects, the port is open
+        try {
+            Socket s = new Socket();
+            s.connect(new InetSocketAddress(host, port), TIMEOUT);
+            String banner = grabBanner(s);
+            String service = ServiceIdentifier.identify(port);
+            openPorts.add(new PortResult(port, service, banner));
+            s.close();
+        } catch (IOException e) {
+            // couldn't connect -> port is closed, ignore it
+        }
+    }
+
+    // (M2) read the first bytes some services send on connect
+    private String grabBanner(Socket s) {
+        try {
+            s.setSoTimeout(200);
+            InputStream input = s.getInputStream();
+            byte[] buffer = new byte[100];
+            int count = input.read(buffer);
+            if (count > 0) {
+                return new String(buffer, 0, count).replace("\n", " ").replace("\r", " ").trim();
+            }
+        } catch (IOException e) {
+            // many services send nothing, that's fine
+        }
+        return "-";
+    }
+
+    // (M2) send one progress update over UDP (connectionless, fire-and-forget)
+    private void sendProgress(DatagramSocket udp, InetAddress addr, int udpPort, int percent, int open) {
+        try {
+            String msg = "PROGRESS " + percent + " " + open;
+            byte[] data = msg.getBytes();
+            DatagramPacket packet = new DatagramPacket(data, data.length, addr, udpPort);
+            udp.send(packet);
+        } catch (IOException e) {
+            // losing a progress packet is ok -> ignore
+        }
     }
 }
