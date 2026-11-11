@@ -130,7 +130,18 @@ public class ClientHandler implements Runnable {
             byte[] buffer = new byte[100];
             int count = input.read(buffer);
             if (count > 0) {
-                return new String(buffer, 0, count).replace("\n", " ").replace("\r", " ").trim();
+                // keep only normal readable characters, drop the binary bytes
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < count; i++) {
+                    char ch = (char) buffer[i];
+                    if (ch >= 32 && ch < 127) {
+                        sb.append(ch);
+                    }
+                }
+                String banner = sb.toString().trim();
+                if (banner.length() > 0) {
+                    return banner;
+                }
             }
         } catch (IOException e) {
         }
