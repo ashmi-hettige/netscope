@@ -19,6 +19,7 @@ public class ClientHandler implements Runnable {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
 
             String request = in.readLine();
+            if (request == null) { socket.close(); return; }
             System.out.println("Got request: " + request);
 
             String[] parts = request.split(" ");
