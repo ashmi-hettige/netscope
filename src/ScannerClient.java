@@ -3,6 +3,9 @@ import java.net.*;
 import java.util.Scanner;
 
 public class ScannerClient {
+    // shared flag so the progress thread stops printing once the report starts
+    private static volatile boolean scanning = true;
+
     public static void main(String[] args) {
         String host = "localhost";
         int port = 5000;
@@ -16,27 +19,24 @@ public class ScannerClient {
         int end = Integer.parseInt(sc.nextLine().trim());
 
         try {
-            // open a UDP socket to receive progress updates from the server
             DatagramSocket udpSocket = new DatagramSocket();
             int udpPort = udpSocket.getLocalPort();
 
-            // listen for progress on its own thread, so it prints while we wait for the report
             Thread progressThread = new Thread(() -> listenProgress(udpSocket));
             progressThread.setDaemon(true);
             progressThread.start();
 
             Socket socket = new Socket(host, port);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            BufferedReader in = new BufferedReader(
-                    new InputStreamReader(socket.getInputStream()));
+            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            // send our real UDP port now, so the server knows where to send progress
             out.println("SCAN " + target + " " + start + " " + end + " " + udpPort);
 
             String line;
             while ((line = in.readLine()) != null) {
                 if (line.equals("REPORT_START")) {
-                    System.out.println();   // move off the progress line before the report
+                    scanning = false;       // stop the progress line
+                    System.out.println();   // move to a clean line before the report
                 }
                 System.out.println(line);
             }
@@ -48,21 +48,21 @@ public class ScannerClient {
         }
     }
 
-    // keeps receiving PROGRESS messages and printing them on one updating line
     private static void listenProgress(DatagramSocket udpSocket) {
         byte[] buffer = new byte[200];
         try {
-            while (true) {
+            while (scanning) {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 udpSocket.receive(packet);
+                if (!scanning) break;       // report has started, don't print over it
                 String msg = new String(packet.getData(), 0, packet.getLength());
-                String[] parts = msg.split(" ");   // PROGRESS <percent> <open>
+                String[] parts = msg.split(" ");
                 if (parts.length == 3) {
                     System.out.print("\rProgress: " + parts[1] + "%  open so far: " + parts[2] + "   ");
                 }
             }
         } catch (IOException e) {
-            // socket closed when the scan ends -> stop quietly
+            // socket closed when the scan ends, stop quietly
         }
     }
 }
