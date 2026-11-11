@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class ClientHandler implements Runnable {
     private Socket socket;
     private static final int POOL_SIZE = 200;
-    private static final int TIMEOUT = 300;   // ms to wait for a port to answer
+    private static final int TIMEOUT = 300;
 
     public ClientHandler(Socket socket) {
         this.socket = socket;
@@ -19,19 +19,33 @@ public class ClientHandler implements Runnable {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
 
             String request = in.readLine();
+            if (request == null) { socket.close(); return; }
             System.out.println("Got request: " + request);
 
             String[] parts = request.split(" ");
             if (parts.length != 5 || !parts[0].equals("SCAN")) {
-                out.println("ERROR Invalid request");
+                out.println("ERROR Invalid request format");
                 socket.close();
                 return;
             }
 
             String target = parts[1];
-            int start = Integer.parseInt(parts[2]);
-            int end = Integer.parseInt(parts[3]);
-            int udpPort = Integer.parseInt(parts[4]);
+            int start, end, udpPort;
+            try {
+                start = Integer.parseInt(parts[2]);
+                end = Integer.parseInt(parts[3]);
+                udpPort = Integer.parseInt(parts[4]);
+            } catch (NumberFormatException e) {
+                out.println("ERROR Ports must be numbers");
+                socket.close();
+                return;
+            }
+
+            if (start < 1 || end > 65535 || start > end) {
+                out.println("ERROR Port range must be between 1 and 65535, and start <= end");
+                socket.close();
+                return;
+            }
 
             scanPorts(target, start, end, socket.getInetAddress(), udpPort, out);
 
@@ -51,7 +65,6 @@ public class ClientHandler implements Runnable {
         ExecutorService pool = Executors.newFixedThreadPool(POOL_SIZE);
         long startTime = System.currentTimeMillis();
 
-        // (M2) open a UDP socket for sending progress updates
         DatagramSocket udp = null;
         try {
             udp = new DatagramSocket();
@@ -65,7 +78,6 @@ public class ClientHandler implements Runnable {
             pool.submit(() -> {
                 scanOnePort(target, p, openPorts);
                 int finished = done.incrementAndGet();
-                // (M2) send progress every 20 ports, only if the client gave a UDP port
                 if (udpSocket != null && udpPort > 0 && (finished % 20 == 0 || finished == totalPorts)) {
                     int percent = finished * 100 / totalPorts;
                     sendProgress(udpSocket, clientAddr, udpPort, percent, openPorts.size());
@@ -99,7 +111,6 @@ public class ClientHandler implements Runnable {
         System.out.println("Scanned " + done.get() + " ports, " + openPorts.size() + " open");
     }
 
-    // (M2) the real check: try to connect; if it works, the port is open
     private void scanOnePort(String host, int port, List<PortResult> openPorts) {
         try {
             Socket s = new Socket();
@@ -109,11 +120,9 @@ public class ClientHandler implements Runnable {
             openPorts.add(new PortResult(port, service, banner));
             s.close();
         } catch (IOException e) {
-            // couldn't connect -> port is closed, ignore it
         }
     }
 
-    // (M2) read the first bytes some services send on connect
     private String grabBanner(Socket s) {
         try {
             s.setSoTimeout(200);
@@ -124,12 +133,10 @@ public class ClientHandler implements Runnable {
                 return new String(buffer, 0, count).replace("\n", " ").replace("\r", " ").trim();
             }
         } catch (IOException e) {
-            // many services send nothing, that's fine
         }
         return "-";
     }
 
-    // (M2) send one progress update over UDP (connectionless, fire-and-forget)
     private void sendProgress(DatagramSocket udp, InetAddress addr, int udpPort, int percent, int open) {
         try {
             String msg = "PROGRESS " + percent + " " + open;
@@ -137,7 +144,6 @@ public class ClientHandler implements Runnable {
             DatagramPacket packet = new DatagramPacket(data, data.length, addr, udpPort);
             udp.send(packet);
         } catch (IOException e) {
-            // losing a progress packet is ok -> ignore
         }
     }
 }
