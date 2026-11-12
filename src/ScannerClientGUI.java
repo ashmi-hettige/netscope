@@ -1,4 +1,5 @@
 import javax.swing.*;
+import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.*;
 import java.net.*;
@@ -13,12 +14,14 @@ public class ScannerClientGUI extends JFrame {
     private JTextField threadsField = new JTextField("200", 5);
     private JButton scanButton = new JButton("Scan");
     private JButton stopButton = new JButton("Stop");
+    private JButton saveButton = new JButton("Save report");
     private JProgressBar progressBar = new JProgressBar(0, 100);
     private JTextArea reportArea = new JTextArea(15, 52);
     private JLabel statusLabel = new JLabel("Ready. Scan only hosts you are allowed to scan.");
 
-    // the id the server gives this scan, so the Stop button can cancel it
     private volatile String currentScanId = null;
+    // remembered so the suggested file name can mention what was scanned
+    private volatile String lastTarget = "scan";
 
     public ScannerClientGUI() {
         setTitle("NetScope Port Scanner");
@@ -36,12 +39,14 @@ public class ScannerClientGUI extends JFrame {
         row2.add(new JLabel("Threads:"));      row2.add(threadsField);
         row2.add(scanButton);
         row2.add(stopButton);
+        row2.add(saveButton);
 
         JPanel top = new JPanel(new GridLayout(2, 1));
         top.add(row1);
         top.add(row2);
 
         stopButton.setEnabled(false);
+        saveButton.setEnabled(false);      // nothing worth saving until a scan finishes
         progressBar.setStringPainted(true);
         reportArea.setEditable(false);
         reportArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
@@ -56,13 +61,87 @@ public class ScannerClientGUI extends JFrame {
 
         scanButton.addActionListener(e -> startScan());
         stopButton.addActionListener(e -> cancelScan());
+        saveButton.addActionListener(e -> saveReport());
 
         pack();
         setLocationRelativeTo(null);
     }
 
+    // ---------------- saving ----------------
+
+    private void saveReport() {
+        String report = reportArea.getText();
+        if (report.trim().isEmpty()) {
+            statusLabel.setText("There is no report to save yet");
+            return;
+        }
+
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Save scan report");
+        FileNameExtensionFilter textFilter = new FileNameExtensionFilter("Text file (*.txt)", "txt");
+        final FileNameExtensionFilter csvFilter = new FileNameExtensionFilter("Spreadsheet (*.csv)", "csv");
+        chooser.addChoosableFileFilter(textFilter);
+        chooser.addChoosableFileFilter(csvFilter);
+        chooser.setFileFilter(textFilter);
+        chooser.setAcceptAllFileFilterUsed(false);
+        chooser.setSelectedFile(new File(ReportWriter.suggestFileName(lastTarget, ".txt")));
+
+        chooser.addPropertyChangeListener(
+            JFileChooser.FILE_FILTER_CHANGED_PROPERTY,
+            event -> {
+                String ext = (chooser.getFileFilter() == csvFilter) ? ".csv" : ".txt";
+                chooser.setSelectedFile(new File(ReportWriter.suggestFileName(lastTarget, ext)));
+            });
+
+        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+
+        boolean wantCsv = chooser.getFileFilter() == csvFilter;
+        String path = chooser.getSelectedFile().getAbsolutePath();
+
+        // if the person picked CSV from the dropdown but the name still ends
+        
+        String lower = path.toLowerCase();
+        if (lower.endsWith(".csv")) wantCsv = true;
+        else if (lower.endsWith(".txt")) wantCsv = false;
+        else path = path + (wantCsv ? ".csv" : ".txt");
+
+        File target = new File(path);
+        if (target.exists()) {
+            int answer = JOptionPane.showConfirmDialog(this,
+                    target.getName() + " already exists. Replace it?",
+                    "Replace file", JOptionPane.YES_NO_OPTION);
+            if (answer != JOptionPane.YES_OPTION) return;
+        }
+
+        // writing to disk is not the event thread's job, so it goes on its own
+        final String finalPath = path;
+        final boolean csv = wantCsv;
+        saveButton.setEnabled(false);
+        statusLabel.setText("Saving...");
+        new Thread(() -> {
+            String message;
+            try {
+                if (csv) ReportWriter.writeCsv(finalPath, report);
+                else ReportWriter.writeText(finalPath, report);
+                message = "Saved to " + finalPath;
+            } catch (IOException e) {
+                message = "Could not save: " + e.getMessage();
+            }
+            final String m = message;
+            SwingUtilities.invokeLater(() -> {
+                statusLabel.setText(m);
+                saveButton.setEnabled(true);
+            });
+        }).start();
+    }
+
+    // ---------------- scanning ----------------
+
     private void startScan() {
         scanButton.setEnabled(false);
+        saveButton.setEnabled(false);
         reportArea.setText("");
         progressBar.setValue(0);
         statusLabel.setText("Scanning...");
@@ -74,11 +153,11 @@ public class ScannerClientGUI extends JFrame {
         String e = endField.getText().trim();
         String t = timeoutField.getText().trim();
         String n = threadsField.getText().trim();
+        lastTarget = target;
 
         new Thread(() -> runScan(host, target, s, e, t, n)).start();
     }
 
-    // open a second connection just to tell the server to stop this scan
     private void cancelScan() {
         final String id = currentScanId;
         if (id == null) return;
@@ -105,6 +184,8 @@ public class ScannerClientGUI extends JFrame {
             statusLabel.setText(message);
             scanButton.setEnabled(true);
             stopButton.setEnabled(false);
+            // a report only becomes savable once there is something in the box
+            saveButton.setEnabled(!reportArea.getText().trim().isEmpty());
         });
     }
 
@@ -139,7 +220,6 @@ public class ScannerClientGUI extends JFrame {
             out.println("SCAN " + target + " " + start + " " + end + " " + udpPort
                     + " " + timeout + " " + threads);
 
-            // the server sends the scan id first, then the report
             String first = in.readLine();
             if (first == null) {
                 finished("Server closed the connection");
@@ -149,7 +229,7 @@ public class ScannerClientGUI extends JFrame {
                 currentScanId = first.split(" ")[1];
                 SwingUtilities.invokeLater(() -> stopButton.setEnabled(true));
             } else {
-                final String msg = first;   // an ERROR line
+                final String msg = first;
                 SwingUtilities.invokeLater(() -> reportArea.setText(msg));
                 finished(msg);
                 return;
