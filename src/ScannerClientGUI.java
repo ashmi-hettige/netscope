@@ -5,27 +5,43 @@ import java.net.*;
 
 public class ScannerClientGUI extends JFrame {
 
-    private JTextField hostField = new JTextField("localhost", 10);
-    private JTextField targetField = new JTextField("127.0.0.1", 10);
-    private JTextField startField = new JTextField("1", 5);
-    private JTextField endField = new JTextField("1000", 5);
+    private JTextField hostField = new JTextField("localhost", 9);
+    private JTextField targetField = new JTextField("127.0.0.1", 11);
+    private JTextField startField = new JTextField("1", 6);
+    private JTextField endField = new JTextField("1000", 6);
+    private JTextField timeoutField = new JTextField("300", 5);
+    private JTextField threadsField = new JTextField("200", 5);
     private JButton scanButton = new JButton("Scan");
+    private JButton stopButton = new JButton("Stop");
     private JProgressBar progressBar = new JProgressBar(0, 100);
-    private JTextArea reportArea = new JTextArea(15, 45);
+    private JTextArea reportArea = new JTextArea(15, 52);
     private JLabel statusLabel = new JLabel("Ready. Scan only hosts you are allowed to scan.");
+
+    // the id the server gives this scan, so the Stop button can cancel it
+    private volatile String currentScanId = null;
 
     public ScannerClientGUI() {
         setTitle("NetScope Port Scanner");
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
 
-        JPanel top = new JPanel();
-        top.add(new JLabel("Server:")); top.add(hostField);
-        top.add(new JLabel("Target:")); top.add(targetField);
-        top.add(new JLabel("Ports:")); top.add(startField);
-        top.add(new JLabel("to")); top.add(endField);
-        top.add(scanButton);
+        JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        row1.add(new JLabel("Server:"));  row1.add(hostField);
+        row1.add(new JLabel("Target:"));  row1.add(targetField);
+        row1.add(new JLabel("Ports:"));   row1.add(startField);
+        row1.add(new JLabel("to"));       row1.add(endField);
 
+        JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        row2.add(new JLabel("Timeout (ms):")); row2.add(timeoutField);
+        row2.add(new JLabel("Threads:"));      row2.add(threadsField);
+        row2.add(scanButton);
+        row2.add(stopButton);
+
+        JPanel top = new JPanel(new GridLayout(2, 1));
+        top.add(row1);
+        top.add(row2);
+
+        stopButton.setEnabled(false);
         progressBar.setStringPainted(true);
         reportArea.setEditable(false);
         reportArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
@@ -39,6 +55,7 @@ public class ScannerClientGUI extends JFrame {
         add(bottom, BorderLayout.SOUTH);
 
         scanButton.addActionListener(e -> startScan());
+        stopButton.addActionListener(e -> cancelScan());
 
         pack();
         setLocationRelativeTo(null);
@@ -49,43 +66,94 @@ public class ScannerClientGUI extends JFrame {
         reportArea.setText("");
         progressBar.setValue(0);
         statusLabel.setText("Scanning...");
+        currentScanId = null;
 
-        // read the fields now (on the UI thread), then do the network work on another thread
         String host = hostField.getText().trim();
         String target = targetField.getText().trim();
-        String startText = startField.getText().trim();
-        String endText = endField.getText().trim();
+        String s = startField.getText().trim();
+        String e = endField.getText().trim();
+        String t = timeoutField.getText().trim();
+        String n = threadsField.getText().trim();
 
-        new Thread(() -> runScan(host, target, startText, endText)).start();
+        new Thread(() -> runScan(host, target, s, e, t, n)).start();
     }
 
-    private void runScan(String host, String target, String startText, String endText) {
-        int start, end;
+    // open a second connection just to tell the server to stop this scan
+    private void cancelScan() {
+        final String id = currentScanId;
+        if (id == null) return;
+        stopButton.setEnabled(false);
+        final String host = hostField.getText().trim();
+        new Thread(() -> {
+            try {
+                Socket s = new Socket(host, 5000);
+                PrintWriter out = new PrintWriter(s.getOutputStream(), true);
+                BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()));
+                out.println("CANCEL " + id);
+                String reply = in.readLine();
+                s.close();
+                final String r = (reply == null) ? "no reply" : reply;
+                SwingUtilities.invokeLater(() -> statusLabel.setText("Stop requested: " + r));
+            } catch (IOException ex) {
+                SwingUtilities.invokeLater(() -> statusLabel.setText("Stop failed: " + ex.getMessage()));
+            }
+        }).start();
+    }
+
+    private void finished(String message) {
+        SwingUtilities.invokeLater(() -> {
+            statusLabel.setText(message);
+            scanButton.setEnabled(true);
+            stopButton.setEnabled(false);
+        });
+    }
+
+    private void runScan(String host, String target, String startText, String endText,
+                         String timeoutText, String threadsText) {
+        int start, end, timeout, threads;
         try {
             start = Integer.parseInt(startText);
             end = Integer.parseInt(endText);
+            timeout = Integer.parseInt(timeoutText);
+            threads = Integer.parseInt(threadsText);
         } catch (NumberFormatException e) {
-            showStatus("Ports must be numbers");
-            SwingUtilities.invokeLater(() -> scanButton.setEnabled(true));
+            finished("Ports, timeout and threads must be numbers");
             return;
         }
 
         DatagramSocket udpSocket = null;
+        Socket socket = null;
         try {
             udpSocket = new DatagramSocket();
             int udpPort = udpSocket.getLocalPort();
 
-            // listen for progress updates on its own thread
             final DatagramSocket udp = udpSocket;
             Thread progressThread = new Thread(() -> listenProgress(udp));
             progressThread.setDaemon(true);
             progressThread.start();
 
-            Socket socket = new Socket(host, 5000);
+            socket = new Socket(host, 5000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            out.println("SCAN " + target + " " + start + " " + end + " " + udpPort);
+            out.println("SCAN " + target + " " + start + " " + end + " " + udpPort
+                    + " " + timeout + " " + threads);
+
+            // the server sends the scan id first, then the report
+            String first = in.readLine();
+            if (first == null) {
+                finished("Server closed the connection");
+                return;
+            }
+            if (first.startsWith("SCANID")) {
+                currentScanId = first.split(" ")[1];
+                SwingUtilities.invokeLater(() -> stopButton.setEnabled(true));
+            } else {
+                final String msg = first;   // an ERROR line
+                SwingUtilities.invokeLater(() -> reportArea.setText(msg));
+                finished(msg);
+                return;
+            }
 
             StringBuilder report = new StringBuilder();
             String line;
@@ -96,16 +164,14 @@ public class ScannerClientGUI extends JFrame {
             SwingUtilities.invokeLater(() -> {
                 reportArea.setText(text);
                 progressBar.setValue(100);
-                statusLabel.setText("Done");
-                scanButton.setEnabled(true);
             });
+            finished("Done");
 
-            socket.close();
         } catch (IOException e) {
-            showStatus("Could not connect: " + e.getMessage());
-            SwingUtilities.invokeLater(() -> scanButton.setEnabled(true));
+            finished("Could not connect: " + e.getMessage());
         } finally {
             if (udpSocket != null) udpSocket.close();
+            if (socket != null) { try { socket.close(); } catch (IOException ignored) {} }
         }
     }
 
@@ -127,12 +193,7 @@ public class ScannerClientGUI extends JFrame {
                 }
             }
         } catch (IOException e) {
-            // socket closed when the scan ends, stop quietly
         }
-    }
-
-    private void showStatus(String text) {
-        SwingUtilities.invokeLater(() -> statusLabel.setText(text));
     }
 
     public static void main(String[] args) {
