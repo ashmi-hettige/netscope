@@ -1,3 +1,4 @@
+// NetScope — holds one open-port result. Owner: Member 2.
 public class PortResult {
     public final int port;
     public final String service;
