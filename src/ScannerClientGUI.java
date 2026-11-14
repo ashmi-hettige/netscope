@@ -12,15 +12,16 @@ public class ScannerClientGUI extends JFrame {
     private JTextField endField = new JTextField("1000", 6);
     private JTextField timeoutField = new JTextField("300", 5);
     private JTextField threadsField = new JTextField("200", 5);
+    private JComboBox<String> protocolBox =
+        new JComboBox<>(new String[] { "TCP", "UDP range", "UDP common ports" });
     private JButton scanButton = new JButton("Scan");
     private JButton stopButton = new JButton("Stop");
     private JButton saveButton = new JButton("Save report");
     private JProgressBar progressBar = new JProgressBar(0, 100);
-    private JTextArea reportArea = new JTextArea(15, 52);
+    private JTextArea reportArea = new JTextArea(16, 56);
     private JLabel statusLabel = new JLabel("Ready. Scan only hosts you are allowed to scan.");
 
     private volatile String currentScanId = null;
-    // remembered so the suggested file name can mention what was scanned
     private volatile String lastTarget = "scan";
 
     public ScannerClientGUI() {
@@ -35,6 +36,7 @@ public class ScannerClientGUI extends JFrame {
         row1.add(new JLabel("to"));       row1.add(endField);
 
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        row2.add(new JLabel("Protocol:")); row2.add(protocolBox);
         row2.add(new JLabel("Timeout (ms):")); row2.add(timeoutField);
         row2.add(new JLabel("Threads:"));      row2.add(threadsField);
         row2.add(scanButton);
@@ -46,7 +48,7 @@ public class ScannerClientGUI extends JFrame {
         top.add(row2);
 
         stopButton.setEnabled(false);
-        saveButton.setEnabled(false);      // nothing worth saving until a scan finishes
+        saveButton.setEnabled(false);
         progressBar.setStringPainted(true);
         reportArea.setEditable(false);
         reportArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
@@ -62,9 +64,27 @@ public class ScannerClientGUI extends JFrame {
         scanButton.addActionListener(e -> startScan());
         stopButton.addActionListener(e -> cancelScan());
         saveButton.addActionListener(e -> saveReport());
+        // UDP needs to wait longer and wants fewer threads, and the common
+        // port list ignores the range boxes, so the form reacts to the choice
+        protocolBox.addActionListener(e -> protocolChanged());
 
         pack();
         setLocationRelativeTo(null);
+    }
+
+    private void protocolChanged() {
+        String choice = (String) protocolBox.getSelectedItem();
+        boolean usesRange = !choice.equals("UDP common ports");
+        startField.setEnabled(usesRange);
+        endField.setEnabled(usesRange);
+
+        if (choice.equals("TCP")) {
+            timeoutField.setText("300");
+            threadsField.setText("200");
+        } else {
+            timeoutField.setText("700");
+            threadsField.setText("50");
+        }
     }
 
     // ---------------- saving ----------------
@@ -86,6 +106,9 @@ public class ScannerClientGUI extends JFrame {
         chooser.setAcceptAllFileFilterUsed(false);
         chooser.setSelectedFile(new File(ReportWriter.suggestFileName(lastTarget, ".txt")));
 
+        // JFileChooser will not rename the file when you change the type in
+        // the dropdown, so the box would still say .txt after picking CSV and
+        // you would end up with a file labelled wrongly. this keeps them in step
         chooser.addPropertyChangeListener(
             JFileChooser.FILE_FILTER_CHANGED_PROPERTY,
             event -> {
@@ -100,8 +123,7 @@ public class ScannerClientGUI extends JFrame {
         boolean wantCsv = chooser.getFileFilter() == csvFilter;
         String path = chooser.getSelectedFile().getAbsolutePath();
 
-        // if the person picked CSV from the dropdown but the name still ends
-        
+        // if what they typed has an extension, trust that over the dropdown
         String lower = path.toLowerCase();
         if (lower.endsWith(".csv")) wantCsv = true;
         else if (lower.endsWith(".txt")) wantCsv = false;
@@ -115,7 +137,9 @@ public class ScannerClientGUI extends JFrame {
             if (answer != JOptionPane.YES_OPTION) return;
         }
 
-        // writing to disk is not the event thread's job, so it goes on its own
+        // writing to disk is not the event thread's job. the dialog has to be
+        // on it because that is where Swing lives, but the file write goes on a
+        // thread of its own and comes back through invokeLater
         final String finalPath = path;
         final boolean csv = wantCsv;
         saveButton.setEnabled(false);
@@ -153,9 +177,10 @@ public class ScannerClientGUI extends JFrame {
         String e = endField.getText().trim();
         String t = timeoutField.getText().trim();
         String n = threadsField.getText().trim();
+        String protocol = (String) protocolBox.getSelectedItem();
         lastTarget = target;
 
-        new Thread(() -> runScan(host, target, s, e, t, n)).start();
+        new Thread(() -> runScan(host, target, s, e, t, n, protocol)).start();
     }
 
     private void cancelScan() {
@@ -184,17 +209,20 @@ public class ScannerClientGUI extends JFrame {
             statusLabel.setText(message);
             scanButton.setEnabled(true);
             stopButton.setEnabled(false);
-            // a report only becomes savable once there is something in the box
+            // only offer to save once there is actually something in the box
             saveButton.setEnabled(!reportArea.getText().trim().isEmpty());
         });
     }
 
     private void runScan(String host, String target, String startText, String endText,
-                         String timeoutText, String threadsText) {
-        int start, end, timeout, threads;
+                         String timeoutText, String threadsText, String protocol) {
+        int start = 1, end = 1, timeout, threads;
+        boolean usesRange = !protocol.equals("UDP common ports");
         try {
-            start = Integer.parseInt(startText);
-            end = Integer.parseInt(endText);
+            if (usesRange) {
+                start = Integer.parseInt(startText);
+                end = Integer.parseInt(endText);
+            }
             timeout = Integer.parseInt(timeoutText);
             threads = Integer.parseInt(threadsText);
         } catch (NumberFormatException e) {
@@ -217,8 +245,18 @@ public class ScannerClientGUI extends JFrame {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            out.println("SCAN " + target + " " + start + " " + end + " " + udpPort
-                    + " " + timeout + " " + threads);
+            String request;
+            if (protocol.equals("TCP")) {
+                request = "SCAN " + target + " " + start + " " + end + " " + udpPort
+                        + " " + timeout + " " + threads;
+            } else if (protocol.equals("UDP range")) {
+                request = "UDPSCAN " + target + " " + start + " " + end + " " + udpPort
+                        + " " + timeout + " " + threads;
+            } else {
+                request = "UDPCOMMON " + target + " " + udpPort
+                        + " " + timeout + " " + threads;
+            }
+            out.println(request);
 
             String first = in.readLine();
             if (first == null) {
@@ -268,7 +306,7 @@ public class ScannerClientGUI extends JFrame {
                     String open = parts[2];
                     SwingUtilities.invokeLater(() -> {
                         progressBar.setValue(percent);
-                        statusLabel.setText("Scanning... open so far: " + open);
+                        statusLabel.setText("Scanning... found so far: " + open);
                     });
                 }
             }
