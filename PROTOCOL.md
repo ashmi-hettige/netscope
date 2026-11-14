@@ -85,3 +85,50 @@ or, if no scan with that id is running:
 The scan that was cancelled still sends its report, marked as
 "CANCELLED - partial results", with a Scanned line showing how many
 ports were actually checked before it stopped.
+
+## 8. UDP scan — TCP request, UDP probing
+
+    UDPSCAN <ip> <start> <end> <udpPort> [timeoutMs] [threads]
+    UDPCOMMON <ip> <udpPort> [timeoutMs] [threads]
+
+UDPCOMMON probes a fixed list of well known UDP service ports instead of a
+range. Both reply with SCANID first and then the report, and both can be
+cancelled with CANCEL in the same way as a TCP scan.
+
+Defaults for UDP are a 700 ms timeout and 50 threads, because UDP services
+are slower to answer than a TCP handshake.
+
+A UDP report carries an extra "Protocol: UDP" line and its table has a STATE
+column, so the table is PORT, STATE, SERVICE, INFO. A TCP report is unchanged
+from section 3.
+
+## 9. Why a UDP report has three states
+
+TCP tells us whether a port is open because the handshake either completes or
+is refused. UDP has no handshake, so the state has to be worked out from what
+comes back:
+
+    a reply datagram        -> open
+    ICMP port unreachable   -> closed
+    nothing at all          -> open|filtered
+
+open|filtered means we cannot tell. The service may be listening but may not
+answer a request it does not recognise, or a firewall may have dropped the
+probe. A scanner that reported such a port as simply open or simply closed
+would be guessing.
+
+Java cannot read ICMP messages directly, so the probe connects the
+DatagramSocket to the target. On a connected socket the JVM reports the ICMP
+port unreachable message as a PortUnreachableException, which is how the
+closed state is detected.
+
+Each probe is sent twice, because the ICMP error sometimes arrives after the
+first receive has already timed out.
+
+## 10. Why there is a common ports mode
+
+Operating systems limit how fast they generate ICMP errors, often to about one
+per second, so scanning a wide UDP range on a remote host takes a very long
+time and most results come back as open|filtered. Scanning the host the server
+is running on avoids this, because the error never leaves the machine. For
+anything else, UDPCOMMON checks the ports that matter instead of every port.
