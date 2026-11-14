@@ -178,13 +178,6 @@ Exhaustive UDP range scanning of a remote host is impractical because operating
 systems rate-limit ICMP error generation, typically to about one per second. The
 common-ports mode exists for that reason.
 
-## Future work
-
-- TLS on the TCP control channel, which would leave the UDP progress channel
-  unencrypted and so needs a design decision rather than just an implementation
-- Scheduled and repeated scans with change detection
-- Comparing two saved reports to show what opened or closed
-
 ## Authors
 
 Group project for EC5205 Operating Systems and Network Programming,
